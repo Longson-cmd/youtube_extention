@@ -2,21 +2,23 @@
   <router-view />
 </template>
 
-<!-- 
-Core pipeline is there, but production-ready pieces are still missing.
+<!-- I am a beginner. Teach me this Chrome extension project step by step using my files:
+- src/pages/HomePage.vue
+- src/background.js
+- src/content.js
+- manifest.json
+- vite.config.ts
 
-Already done:
-
-Content script extracts subtitles
-Background sends to backend
-Extension builds and loads
-Still needed:
-
-Handle YouTube SPA navigation (watch changes without full reload)
-Prevent duplicate sends for same video
-Better subtitle language selection and fallback
-Robust error reporting/retry in background
-Backend auth/token (so endpoint isn’t open)
-Optional Vue popup UI for status + manual resend
-Privacy controls (only send on user action, if required)
-So: MVP works, but not complete-hardened yet. -->
+Rules:
+1) Explain in very simple language.
+2) Start with a high-level architecture diagram in text.
+3) Then explain one file at a time.
+4) For each file, show:
+   - what it does
+   - when it runs
+   - what messages it sends/receives
+   - 3 key lines I must understand
+5) After each file, give me 2 small quiz questions.
+6) Then give me one tiny coding exercise (max 10 lines change) and ask me to try.
+7) Do NOT dump full rewritten code.
+8) If I say “next”, continue to next file. -->

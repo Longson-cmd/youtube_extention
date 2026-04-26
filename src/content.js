@@ -1,65 +1,37 @@
-// Content script (simple version)
-// Goal:
-// 1) Open transcript panel
-// 2) Read transcript lines from DOM
-// 3) Return text to background script
-
-const TRANSCRIPT_SEGMENT_SELECTOR =
+const SEGMENT_SELECTOR =
   'ytd-engagement-panel-section-list-renderer[target-id*="transcript"] ytd-transcript-segment-renderer, ytd-transcript-segment-renderer';
+
 const MENU_BUTTON_SELECTOR =
   "ytd-menu-renderer yt-button-shape button, ytd-menu-renderer button, ytd-watch-flexy #menu button";
+
 const MENU_ITEM_SELECTOR =
   "ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer, tp-yt-paper-item";
 
-function wait(ms) {
+function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function normalize(text) {
-  return String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
+function findByKeyword(selector, keywords) {
+  const items = Array.from(document.querySelectorAll(selector));
+  return (
+    items.find((el) => {
+      const text = `${el?.innerText || ""} ${el?.getAttribute?.("aria-label") || ""} ${el?.getAttribute?.("title") || ""}`
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+      return keywords.some((keyword) => text.includes(keyword));
+    }) || null
+  );
 }
 
-function hasKeyword(text, keywords) {
-  const value = normalize(text);
-  return keywords.some((keyword) => value.includes(normalize(keyword)));
-}
-
-function click(el) {
-  if (!el) return false;
-  el.click();
-  return true;
-}
-
-function getElementText(el) {
-  return `${el?.innerText || ""} ${el?.getAttribute?.("aria-label") || ""} ${el?.getAttribute?.("title") || ""}`;
-}
-
-function getVideoId() {
-  return new URL(window.location.href).searchParams.get("v");
-}
-
-function getCourseName() {
-  const channelName = document.querySelector("#channel-name a");
-  const metaName = document.querySelector('meta[itemprop="author"]');
-  return (channelName?.textContent || "").trim() || (metaName?.content || "").trim() || "Unknown Course";
-}
-
-function getLessonName() {
-  const heading = document.querySelector("h1.ytd-watch-metadata");
-  const titleNode = heading?.querySelector("yt-formatted-string");
-  return (titleNode?.textContent || "").trim() || document.title.replace(" - YouTube", "").trim() || "Unknown Lesson";
-}
-
-// Read transcript rows and format each line as: "timestamp | text"
-function getTranscriptLinesFromDom() {
-  const nodes = Array.from(document.querySelectorAll(TRANSCRIPT_SEGMENT_SELECTOR));
-
-  return nodes
+function getLinesFromTranscriptPanel() {
+  return Array.from(document.querySelectorAll(SEGMENT_SELECTOR))
     .map((node) => {
       const timeNode =
         node.querySelector("div.segment-timestamp") ||
         node.querySelector(".segment-timestamp") ||
         node.querySelector("#segment-timestamp");
+
       const textNode =
         node.querySelector("yt-formatted-string.segment-text") ||
         node.querySelector(".segment-text") ||
@@ -67,64 +39,166 @@ function getTranscriptLinesFromDom() {
 
       const timestamp = (timeNode?.textContent || "").replace(/\s+/g, " ").trim();
       const text = (textNode?.textContent || "").replace(/\s+/g, " ").trim();
+
       if (!text) return "";
       return timestamp ? `${timestamp} | ${text}` : text;
     })
     .filter(Boolean);
 }
 
-function findMenuButton() {
-  const candidates = Array.from(document.querySelectorAll(MENU_BUTTON_SELECTOR));
-  return candidates.find((el) => hasKeyword(getElementText(el), ["more actions", "more"])) || null;
-}
+async function readTranscriptPanelText() {
+  for (let i = 0; i < 12; i += 1) {
+    const lines = getLinesFromTranscriptPanel();
+    if (lines.length) return lines.join("\n");
 
-function findTranscriptMenuItem() {
-  const candidates = Array.from(document.querySelectorAll(MENU_ITEM_SELECTOR));
-  return candidates.find((el) => hasKeyword(getElementText(el), ["show transcript", "transcript"])) || null;
-}
+    const transcriptItem = findByKeyword(MENU_ITEM_SELECTOR, ["show transcript", "transcript"]);
+    if (transcriptItem) {
+      transcriptItem.click();
+      await sleep(250);
+    } else {
+      findByKeyword(MENU_BUTTON_SELECTOR, ["more actions", "more"])?.click();
+      await sleep(250);
+      findByKeyword(MENU_ITEM_SELECTOR, ["show transcript", "transcript"])?.click();
+      await sleep(350);
+    }
 
-async function ensureTranscriptPanelOpen() {
-  if (getTranscriptLinesFromDom().length > 0) return;
-
-  // Sometimes transcript item is already visible.
-  if (click(findTranscriptMenuItem())) {
-    await wait(250);
-    return;
+    await sleep(450);
   }
 
-  // Normal path: click menu -> click transcript item.
-  click(findMenuButton());
-  await wait(250);
-  click(findTranscriptMenuItem());
-  await wait(350);
-}
-
-async function extractTranscriptText(maxAttempts, delayMs) {
-  for (let i = 0; i < maxAttempts; i += 1) {
-    const lines = getTranscriptLinesFromDom();
-    if (lines.length > 0) return lines.join("\n");
-
-    await ensureTranscriptPanelOpen();
-    await wait(delayMs);
-  }
   return "";
 }
 
+function formatTimestamp(ms) {
+  const totalSec = Math.floor(ms / 1000);
+  const hour = Math.floor(totalSec / 3600);
+  const min = Math.floor((totalSec % 3600) / 60);
+  const sec = totalSec % 60;
+  if (hour > 0) return `${String(hour).padStart(2, "0")}:${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  return `${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+}
+
+function extractJsonObjectAfter(text, marker) {
+  const startMarker = text.indexOf(marker);
+  if (startMarker === -1) return null;
+
+  const jsonStart = text.indexOf("{", startMarker);
+  if (jsonStart === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = jsonStart; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === "{") depth += 1;
+    if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        const jsonText = text.slice(jsonStart, i + 1);
+        try {
+          return JSON.parse(jsonText);
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function getPlayerResponseFromPageScripts() {
+  const scripts = Array.from(document.scripts);
+  for (const script of scripts) {
+    const text = script.textContent || "";
+    if (!text) continue;
+
+    let parsed = extractJsonObjectAfter(text, "ytInitialPlayerResponse =");
+    if (parsed) return parsed;
+
+    parsed = extractJsonObjectAfter(text, "var ytInitialPlayerResponse =");
+    if (parsed) return parsed;
+
+    parsed = extractJsonObjectAfter(text, "window['ytInitialPlayerResponse'] =");
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
+function pickCaptionTrack(tracks) {
+  if (!Array.isArray(tracks) || tracks.length === 0) return null;
+
+  const preferred =
+    tracks.find((t) => (t?.languageCode || "").toLowerCase().startsWith("en")) ||
+    tracks.find((t) => t?.kind !== "asr") ||
+    tracks[0];
+
+  return preferred || null;
+}
+
+async function getSubtitleTextFromTrackBaseUrl(baseUrl) {
+  const jsonUrl = baseUrl.includes("fmt=") ? baseUrl : `${baseUrl}&fmt=json3`;
+  const res = await fetch(jsonUrl, { credentials: "include" });
+  if (!res.ok) throw new Error(`Caption fetch failed (${res.status})`);
+
+  const data = await res.json().catch(() => null);
+  const events = Array.isArray(data?.events) ? data.events : [];
+  const lines = [];
+
+  for (const event of events) {
+    const parts = Array.isArray(event?.segs) ? event.segs.map((seg) => seg?.utf8 || "").join("") : "";
+    const text = parts.replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    const ts = formatTimestamp(Number(event?.tStartMs || 0));
+    lines.push(`${ts} | ${text}`);
+  }
+
+  return lines.join("\n").trim();
+}
+
+async function readTranscriptFromCaptionsApi() {
+  const playerResponse = getPlayerResponseFromPageScripts();
+  const tracks = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+  const track = pickCaptionTrack(tracks);
+  if (!track?.baseUrl) return "";
+
+  try {
+    return await getSubtitleTextFromTrackBaseUrl(track.baseUrl);
+  } catch {
+    return "";
+  }
+}
+
 async function extractSubtitlePayload() {
-  const videoId = getVideoId();
+  const videoId = new URL(window.location.href).searchParams.get("v");
   if (!videoId) throw new Error("No videoId found in URL");
 
-  const subtitleText = await extractTranscriptText(12, 450);
-  if (!subtitleText) throw new Error("Transcript not found. Open transcript manually and try again.");
+  let subtitleText = await readTranscriptPanelText();
+  if (!subtitleText) {
+    subtitleText = await readTranscriptFromCaptionsApi();
+  }
+
+  if (!subtitleText) throw new Error("Transcript not found. Try enabling captions and opening transcript once.");
 
   return {
     videoId,
-    videoUrl: window.location.href,
-    course: getCourseName(),
-    lessonName: getLessonName(),
-    languageCode: "dom",
     subtitleText,
-    fetchedAt: new Date().toISOString(),
   };
 }
 
@@ -133,8 +207,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   (async () => {
     try {
-      const payload = await extractSubtitlePayload();
-      sendResponse({ ok: true, payload });
+      sendResponse({ ok: true, payload: await extractSubtitlePayload() });
     } catch (error) {
       sendResponse({ ok: false, error: String(error) });
     }
