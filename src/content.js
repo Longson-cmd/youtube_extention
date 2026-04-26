@@ -7,6 +7,10 @@ const MENU_BUTTON_SELECTOR =
 const MENU_ITEM_SELECTOR =
   "ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer, tp-yt-paper-item";
 
+function dbg(...args) {
+  console.log("[subtitle-debug]", ...args);
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -47,15 +51,19 @@ function getLinesFromTranscriptPanel() {
 }
 
 async function readTranscriptPanelText() {
+  dbg("UI transcript path: start");
   for (let i = 0; i < 12; i += 1) {
     const lines = getLinesFromTranscriptPanel();
+    dbg("UI transcript path: attempt", i + 1, "lines:", lines.length);
     if (lines.length) return lines.join("\n");
 
     const transcriptItem = findByKeyword(MENU_ITEM_SELECTOR, ["show transcript", "transcript"]);
     if (transcriptItem) {
+      dbg("UI transcript path: found transcript menu item, clicking");
       transcriptItem.click();
       await sleep(250);
     } else {
+      dbg("UI transcript path: transcript item not found, opening more menu");
       findByKeyword(MENU_BUTTON_SELECTOR, ["more actions", "more"])?.click();
       await sleep(250);
       findByKeyword(MENU_ITEM_SELECTOR, ["show transcript", "transcript"])?.click();
@@ -125,6 +133,7 @@ function extractJsonObjectAfter(text, marker) {
 
 function getPlayerResponseFromPageScripts() {
   const scripts = Array.from(document.scripts);
+  dbg("Fallback path: scanning scripts for ytInitialPlayerResponse, script count:", scripts.length);
   for (const script of scripts) {
     const text = script.textContent || "";
     if (!text) continue;
@@ -154,11 +163,14 @@ function pickCaptionTrack(tracks) {
 
 async function getSubtitleTextFromTrackBaseUrl(baseUrl) {
   const jsonUrl = baseUrl.includes("fmt=") ? baseUrl : `${baseUrl}&fmt=json3`;
+  dbg("Fallback path: fetching caption JSON", jsonUrl.slice(0, 160));
   const res = await fetch(jsonUrl, { credentials: "include" });
+  dbg("Fallback path: caption fetch status", res.status);
   if (!res.ok) throw new Error(`Caption fetch failed (${res.status})`);
 
   const data = await res.json().catch(() => null);
   const events = Array.isArray(data?.events) ? data.events : [];
+  dbg("Fallback path: caption events count", events.length);
   const lines = [];
 
   for (const event of events) {
@@ -173,14 +185,18 @@ async function getSubtitleTextFromTrackBaseUrl(baseUrl) {
 }
 
 async function readTranscriptFromCaptionsApi() {
+  dbg("Fallback path: start");
   const playerResponse = getPlayerResponseFromPageScripts();
   const tracks = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+  dbg("Fallback path: caption tracks count", Array.isArray(tracks) ? tracks.length : 0);
   const track = pickCaptionTrack(tracks);
+  dbg("Fallback path: chosen track", track?.languageCode || "none", track?.kind || "n/a");
   if (!track?.baseUrl) return "";
 
   try {
     return await getSubtitleTextFromTrackBaseUrl(track.baseUrl);
   } catch {
+    dbg("Fallback path: caption fetch/parse failed");
     return "";
   }
 }
@@ -188,10 +204,14 @@ async function readTranscriptFromCaptionsApi() {
 async function extractSubtitlePayload() {
   const videoId = new URL(window.location.href).searchParams.get("v");
   if (!videoId) throw new Error("No videoId found in URL");
+  dbg("Extract start, videoId:", videoId);
 
   let subtitleText = await readTranscriptPanelText();
+  dbg("UI transcript result length:", subtitleText.length);
   if (!subtitleText) {
+    dbg("Trying fallback captions API path");
     subtitleText = await readTranscriptFromCaptionsApi();
+    dbg("Fallback result length:", subtitleText.length);
   }
 
   if (!subtitleText) throw new Error("Transcript not found. Try enabling captions and opening transcript once.");
@@ -204,11 +224,13 @@ async function extractSubtitlePayload() {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type !== "EXTRACT_SUBTITLES") return;
+  dbg("Received message", message?.type);
 
   (async () => {
     try {
       sendResponse({ ok: true, payload: await extractSubtitlePayload() });
     } catch (error) {
+      dbg("Extraction failed", String(error));
       sendResponse({ ok: false, error: String(error) });
     }
   })();
