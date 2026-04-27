@@ -1,239 +1,182 @@
-const SEGMENT_SELECTOR =
-  'ytd-engagement-panel-section-list-renderer[target-id*="transcript"] ytd-transcript-segment-renderer, ytd-transcript-segment-renderer';
+const SEGMENT_SELECTOR = [
+  'ytd-engagement-panel-section-list-renderer[target-id*="transcript"] ytd-transcript-segment-renderer',
+  "ytd-transcript-segment-renderer",
+  'ytd-engagement-panel-section-list-renderer[target-id*="transcript"] transcript-segment-view-model',
+  "transcript-segment-view-model",
+].join(", ");
+const TRANSCRIPT_CHIP_SELECTOR = "button.ytChipShapeButtonReset";
+const MENU_ITEM_SELECTOR = [
+  "ytd-menu-service-item-renderer",
+  "ytd-menu-navigation-item-renderer",
+  "tp-yt-paper-item",
+].join(", ");
+const MORE_MENU_SELECTOR = [
+  "ytd-menu-renderer button",
+  "ytd-watch-metadata #menu button",
+  "ytd-watch-flexy #menu button",
+].join(", ");
 
-const MENU_BUTTON_SELECTOR =
-  "ytd-menu-renderer yt-button-shape button, ytd-menu-renderer button, ytd-watch-flexy #menu button";
-
-const MENU_ITEM_SELECTOR =
-  "ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer, tp-yt-paper-item";
-
-function dbg(...args) {
-  console.log("[subtitle-debug]", ...args);
-}
+const DEBUG_PREFIX = "[YT Subtitle Extractor]";
+const TRANSCRIPT_KEYWORDS = ["show transcript", "transcript", "ban chep loi", "hien ban chep loi"];
+const CLOSE_KEYWORDS = ["close transcript", "dong ban chep loi"];
+const MORE_KEYWORDS = ["more actions", "more", "them", "tac vu khac", "hanh dong khac"];
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function findByKeyword(selector, keywords) {
-  const items = Array.from(document.querySelectorAll(selector));
+function normalizeText(text) {
+  return (text || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getNodeText(node) {
+  return normalizeText(
+    `${node?.innerText || ""} ${node?.getAttribute?.("aria-label") || ""} ${node?.getAttribute?.("title") || ""}`
+  );
+}
+
+function hasAnyKeyword(text, keywords) {
+  return keywords.some((keyword) => text.includes(keyword));
+}
+
+function findByKeyword(selector, keywords, excludedKeywords = []) {
+  const nodes = Array.from(document.querySelectorAll(selector));
   return (
-    items.find((el) => {
-      const text = `${el?.innerText || ""} ${el?.getAttribute?.("aria-label") || ""} ${el?.getAttribute?.("title") || ""}`
-        .replace(/\s+/g, " ")
-        .trim()
-        .toLowerCase();
-      return keywords.some((keyword) => text.includes(keyword));
+    nodes.find((node) => {
+      const text = getNodeText(node);
+      return hasAnyKeyword(text, keywords) && !hasAnyKeyword(text, excludedKeywords);
     }) || null
   );
 }
 
-function getLinesFromTranscriptPanel() {
+function getSubtitleLinesFromPanel() {
   return Array.from(document.querySelectorAll(SEGMENT_SELECTOR))
-    .map((node) => {
-      const timeNode =
-        node.querySelector("div.segment-timestamp") ||
-        node.querySelector(".segment-timestamp") ||
-        node.querySelector("#segment-timestamp");
-
-      const textNode =
-        node.querySelector("yt-formatted-string.segment-text") ||
-        node.querySelector(".segment-text") ||
-        node.querySelector("yt-formatted-string");
-
-      const timestamp = (timeNode?.textContent || "").replace(/\s+/g, " ").trim();
-      const text = (textNode?.textContent || "").replace(/\s+/g, " ").trim();
-
+    .map((segment) => {
+      const timestamp = (
+        segment.querySelector(
+          ".segment-timestamp, #segment-timestamp, .ytwTranscriptSegmentViewModelTimestamp"
+        )?.textContent || ""
+      )
+        .replace(/\s+/g, " ")
+        .trim();
+      const text = (
+        segment.querySelector(
+          ".segment-text, yt-formatted-string.segment-text, span.ytAttributedStringHost, [role='text']"
+        )?.textContent || ""
+      )
+        .replace(/\s+/g, " ")
+        .trim();
       if (!text) return "";
       return timestamp ? `${timestamp} | ${text}` : text;
     })
     .filter(Boolean);
 }
 
-async function readTranscriptPanelText() {
-  dbg("UI transcript path: start");
-  for (let i = 0; i < 12; i += 1) {
-    const lines = getLinesFromTranscriptPanel();
-    dbg("UI transcript path: attempt", i + 1, "lines:", lines.length);
-    if (lines.length) return lines.join("\n");
+function findTranscriptChip() {
+  return findByKeyword(TRANSCRIPT_CHIP_SELECTOR, TRANSCRIPT_KEYWORDS, CLOSE_KEYWORDS);
+}
 
-    const transcriptItem = findByKeyword(MENU_ITEM_SELECTOR, ["show transcript", "transcript"]);
-    if (transcriptItem) {
-      dbg("UI transcript path: found transcript menu item, clicking");
-      transcriptItem.click();
-      await sleep(250);
+async function ensureTranscriptIsOpen() {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    if (getSubtitleLinesFromPanel().length) return true;
+
+    const chip = findTranscriptChip();
+    if (chip) {
+      console.log(`${DEBUG_PREFIX} Click transcript chip (attempt ${attempt}).`);
+      chip.click();
+      await sleep(700);
+      if (getSubtitleLinesFromPanel().length) return true;
+    }
+
+    const moreButton = findByKeyword(MORE_MENU_SELECTOR, MORE_KEYWORDS);
+    if (moreButton) {
+      console.log(`${DEBUG_PREFIX} Open more menu (attempt ${attempt}).`);
+      moreButton.click();
+      await sleep(300);
+    }
+
+    const menuItem = findByKeyword(MENU_ITEM_SELECTOR, TRANSCRIPT_KEYWORDS, CLOSE_KEYWORDS);
+    if (menuItem) {
+      console.log(`${DEBUG_PREFIX} Click transcript menu item (attempt ${attempt}).`);
+      menuItem.click();
     } else {
-      dbg("UI transcript path: transcript item not found, opening more menu");
-      findByKeyword(MENU_BUTTON_SELECTOR, ["more actions", "more"])?.click();
-      await sleep(250);
-      findByKeyword(MENU_ITEM_SELECTOR, ["show transcript", "transcript"])?.click();
-      await sleep(350);
+      console.log(`${DEBUG_PREFIX} Transcript button/menu item not found (attempt ${attempt}).`);
     }
 
-    await sleep(450);
+    await sleep(700);
   }
-
-  return "";
+  return false;
 }
 
-function formatTimestamp(ms) {
-  const totalSec = Math.floor(ms / 1000);
-  const hour = Math.floor(totalSec / 3600);
-  const min = Math.floor((totalSec % 3600) / 60);
-  const sec = totalSec % 60;
-  if (hour > 0) return `${String(hour).padStart(2, "0")}:${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
-  return `${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
-}
+function readVideoMeta() {
+  const url = new URL(window.location.href);
+  const videoId = url.searchParams.get("v");
+  if (!videoId) throw new Error("No videoId found in URL");
 
-function extractJsonObjectAfter(text, marker) {
-  const startMarker = text.indexOf(marker);
-  if (startMarker === -1) return null;
+  const lessonName =
+    document.querySelector("h1.ytd-watch-metadata yt-formatted-string")?.textContent?.trim() ||
+    document.title.replace(" - YouTube", "").trim() ||
+    "-";
 
-  const jsonStart = text.indexOf("{", startMarker);
-  if (jsonStart === -1) return null;
+  const course =
+    document.querySelector("ytd-channel-name a")?.textContent?.trim() ||
+    document.querySelector("#owner #channel-name a")?.textContent?.trim() ||
+    "-";
 
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let i = jsonStart; i < text.length; i += 1) {
-    const ch = text[i];
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (ch === "\\") {
-        escaped = true;
-      } else if (ch === '"') {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (ch === '"') {
-      inString = true;
-      continue;
-    }
-
-    if (ch === "{") depth += 1;
-    if (ch === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        const jsonText = text.slice(jsonStart, i + 1);
-        try {
-          return JSON.parse(jsonText);
-        } catch {
-          return null;
-        }
-      }
-    }
-  }
-
-  return null;
-}
-
-function getPlayerResponseFromPageScripts() {
-  const scripts = Array.from(document.scripts);
-  dbg("Fallback path: scanning scripts for ytInitialPlayerResponse, script count:", scripts.length);
-  for (const script of scripts) {
-    const text = script.textContent || "";
-    if (!text) continue;
-
-    let parsed = extractJsonObjectAfter(text, "ytInitialPlayerResponse =");
-    if (parsed) return parsed;
-
-    parsed = extractJsonObjectAfter(text, "var ytInitialPlayerResponse =");
-    if (parsed) return parsed;
-
-    parsed = extractJsonObjectAfter(text, "window['ytInitialPlayerResponse'] =");
-    if (parsed) return parsed;
-  }
-  return null;
-}
-
-function pickCaptionTrack(tracks) {
-  if (!Array.isArray(tracks) || tracks.length === 0) return null;
-
-  const preferred =
-    tracks.find((t) => (t?.languageCode || "").toLowerCase().startsWith("en")) ||
-    tracks.find((t) => t?.kind !== "asr") ||
-    tracks[0];
-
-  return preferred || null;
-}
-
-async function getSubtitleTextFromTrackBaseUrl(baseUrl) {
-  const jsonUrl = baseUrl.includes("fmt=") ? baseUrl : `${baseUrl}&fmt=json3`;
-  dbg("Fallback path: fetching caption JSON", jsonUrl.slice(0, 160));
-  const res = await fetch(jsonUrl, { credentials: "include" });
-  dbg("Fallback path: caption fetch status", res.status);
-  if (!res.ok) throw new Error(`Caption fetch failed (${res.status})`);
-
-  const data = await res.json().catch(() => null);
-  const events = Array.isArray(data?.events) ? data.events : [];
-  dbg("Fallback path: caption events count", events.length);
-  const lines = [];
-
-  for (const event of events) {
-    const parts = Array.isArray(event?.segs) ? event.segs.map((seg) => seg?.utf8 || "").join("") : "";
-    const text = parts.replace(/\s+/g, " ").trim();
-    if (!text) continue;
-    const ts = formatTimestamp(Number(event?.tStartMs || 0));
-    lines.push(`${ts} | ${text}`);
-  }
-
-  return lines.join("\n").trim();
-}
-
-async function readTranscriptFromCaptionsApi() {
-  dbg("Fallback path: start");
-  const playerResponse = getPlayerResponseFromPageScripts();
-  const tracks = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
-  dbg("Fallback path: caption tracks count", Array.isArray(tracks) ? tracks.length : 0);
-  const track = pickCaptionTrack(tracks);
-  dbg("Fallback path: chosen track", track?.languageCode || "none", track?.kind || "n/a");
-  if (!track?.baseUrl) return "";
-
-  try {
-    return await getSubtitleTextFromTrackBaseUrl(track.baseUrl);
-  } catch {
-    dbg("Fallback path: caption fetch/parse failed");
-    return "";
-  }
+  return { videoId, lessonName, course };
 }
 
 async function extractSubtitlePayload() {
-  const videoId = new URL(window.location.href).searchParams.get("v");
-  if (!videoId) throw new Error("No videoId found in URL");
-  dbg("Extract start, videoId:", videoId);
+  await ensureTranscriptIsOpen();
+  const lines = getSubtitleLinesFromPanel();
 
-  let subtitleText = await readTranscriptPanelText();
-  dbg("UI transcript result length:", subtitleText.length);
-  if (!subtitleText) {
-    dbg("Trying fallback captions API path");
-    subtitleText = await readTranscriptFromCaptionsApi();
-    dbg("Fallback result length:", subtitleText.length);
+  if (!lines.length) {
+    throw new Error("Transcript not found. Open a video that has transcript.");
   }
 
-  if (!subtitleText) throw new Error("Transcript not found. Try enabling captions and opening transcript once.");
+  console.log(`${DEBUG_PREFIX} First 3 subtitle lines:`);
+  lines.slice(0, 3).forEach((line, index) => {
+    console.log(`${DEBUG_PREFIX} ${index + 1}. ${line}`);
+  });
 
+  const { videoId, lessonName, course } = readVideoMeta();
   return {
     videoId,
-    subtitleText,
+    lessonName,
+    course,
+    subtitleText: lines.join("\n"),
   };
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type !== "EXTRACT_SUBTITLES") return;
-  dbg("Received message", message?.type);
+function setupMessageListener() {
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type !== "EXTRACT_SUBTITLES") return;
 
-  (async () => {
-    try {
-      sendResponse({ ok: true, payload: await extractSubtitlePayload() });
-    } catch (error) {
-      dbg("Extraction failed", String(error));
-      sendResponse({ ok: false, error: String(error) });
-    }
-  })();
+    (async () => {
+      try {
+        const payload = await extractSubtitlePayload();
+        sendResponse({ ok: true, payload });
+      } catch (error) {
+        sendResponse({ ok: false, error: String(error) });
+      }
+    })();
 
-  return true;
-});
+    return true;
+  });
+}
+
+if (!window.__YT_SUBTITLE_EXTRACTOR_INSTALLED__) {
+  window.__YT_SUBTITLE_EXTRACTOR_INSTALLED__ = true;
+  setupMessageListener();
+  console.log(`${DEBUG_PREFIX} content script loaded`);
+}
+
+// timestamp: .ytwTranscriptSegmentViewModelTimestamp
+// text: span.ytAttributedStringHost
+
+// try caption-track extraction (data/API path).

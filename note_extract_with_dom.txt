@@ -1,0 +1,13 @@
+Production Risks (DOM Transcript Extraction)
+
+1. YouTube DOM/classes are unstable
+- Risk: Selector-based extraction is brittle and may break when YouTube updates markup.
+- Impact: Transcript reads can fail without code changes on our side.
+
+2. Text-keyword matching is locale/experiment sensitive
+- Risk: Control detection based on UI text can break across languages or A/B tests.
+- Impact: Script may fail to find/open transcript button or menu item.
+
+3. Fixed retry/sleep timing is flaky
+- Risk: Static delays can be too short on slow pages or unnecessary on fast pages.
+- Impact: Intermittent failures and inconsistent extraction behavior.
