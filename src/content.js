@@ -178,3 +178,5 @@ if (!window.__YT_SUBTITLE_EXTRACTOR_INSTALLED__) {
 
 // timestamp: .ytwTranscriptSegmentViewModelTimestamp
 // text: span.ytAttributedStringHost
+
+// try caption-track extraction (data/API path).
