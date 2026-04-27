@@ -1,144 +1,180 @@
-// Content script (simple version)
-// Goal:
-// 1) Open transcript panel
-// 2) Read transcript lines from DOM
-// 3) Return text to background script
+const SEGMENT_SELECTOR = [
+  'ytd-engagement-panel-section-list-renderer[target-id*="transcript"] ytd-transcript-segment-renderer',
+  "ytd-transcript-segment-renderer",
+  'ytd-engagement-panel-section-list-renderer[target-id*="transcript"] transcript-segment-view-model',
+  "transcript-segment-view-model",
+].join(", ");
+const TRANSCRIPT_CHIP_SELECTOR = "button.ytChipShapeButtonReset";
+const MENU_ITEM_SELECTOR = [
+  "ytd-menu-service-item-renderer",
+  "ytd-menu-navigation-item-renderer",
+  "tp-yt-paper-item",
+].join(", ");
+const MORE_MENU_SELECTOR = [
+  "ytd-menu-renderer button",
+  "ytd-watch-metadata #menu button",
+  "ytd-watch-flexy #menu button",
+].join(", ");
 
-const TRANSCRIPT_SEGMENT_SELECTOR =
-  'ytd-engagement-panel-section-list-renderer[target-id*="transcript"] ytd-transcript-segment-renderer, ytd-transcript-segment-renderer';
-const MENU_BUTTON_SELECTOR =
-  "ytd-menu-renderer yt-button-shape button, ytd-menu-renderer button, ytd-watch-flexy #menu button";
-const MENU_ITEM_SELECTOR =
-  "ytd-menu-service-item-renderer, ytd-menu-navigation-item-renderer, tp-yt-paper-item";
+const DEBUG_PREFIX = "[YT Subtitle Extractor]";
+const TRANSCRIPT_KEYWORDS = ["show transcript", "transcript", "ban chep loi", "hien ban chep loi"];
+const CLOSE_KEYWORDS = ["close transcript", "dong ban chep loi"];
+const MORE_KEYWORDS = ["more actions", "more", "them", "tac vu khac", "hanh dong khac"];
 
-function wait(ms) {
+function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function normalize(text) {
-  return String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
+function normalizeText(text) {
+  return (text || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-function hasKeyword(text, keywords) {
-  const value = normalize(text);
-  return keywords.some((keyword) => value.includes(normalize(keyword)));
+function getNodeText(node) {
+  return normalizeText(
+    `${node?.innerText || ""} ${node?.getAttribute?.("aria-label") || ""} ${node?.getAttribute?.("title") || ""}`
+  );
 }
 
-function click(el) {
-  if (!el) return false;
-  el.click();
-  return true;
+function hasAnyKeyword(text, keywords) {
+  return keywords.some((keyword) => text.includes(keyword));
 }
 
-function getElementText(el) {
-  return `${el?.innerText || ""} ${el?.getAttribute?.("aria-label") || ""} ${el?.getAttribute?.("title") || ""}`;
+function findByKeyword(selector, keywords, excludedKeywords = []) {
+  const nodes = Array.from(document.querySelectorAll(selector));
+  return (
+    nodes.find((node) => {
+      const text = getNodeText(node);
+      return hasAnyKeyword(text, keywords) && !hasAnyKeyword(text, excludedKeywords);
+    }) || null
+  );
 }
 
-function getVideoId() {
-  return new URL(window.location.href).searchParams.get("v");
-}
-
-function getCourseName() {
-  const channelName = document.querySelector("#channel-name a");
-  const metaName = document.querySelector('meta[itemprop="author"]');
-  return (channelName?.textContent || "").trim() || (metaName?.content || "").trim() || "Unknown Course";
-}
-
-function getLessonName() {
-  const heading = document.querySelector("h1.ytd-watch-metadata");
-  const titleNode = heading?.querySelector("yt-formatted-string");
-  return (titleNode?.textContent || "").trim() || document.title.replace(" - YouTube", "").trim() || "Unknown Lesson";
-}
-
-// Read transcript rows and format each line as: "timestamp | text"
-function getTranscriptLinesFromDom() {
-  const nodes = Array.from(document.querySelectorAll(TRANSCRIPT_SEGMENT_SELECTOR));
-
-  return nodes
-    .map((node) => {
-      const timeNode =
-        node.querySelector("div.segment-timestamp") ||
-        node.querySelector(".segment-timestamp") ||
-        node.querySelector("#segment-timestamp");
-      const textNode =
-        node.querySelector("yt-formatted-string.segment-text") ||
-        node.querySelector(".segment-text") ||
-        node.querySelector("yt-formatted-string");
-
-      const timestamp = (timeNode?.textContent || "").replace(/\s+/g, " ").trim();
-      const text = (textNode?.textContent || "").replace(/\s+/g, " ").trim();
+function getSubtitleLinesFromPanel() {
+  return Array.from(document.querySelectorAll(SEGMENT_SELECTOR))
+    .map((segment) => {
+      const timestamp = (
+        segment.querySelector(
+          ".segment-timestamp, #segment-timestamp, .ytwTranscriptSegmentViewModelTimestamp"
+        )?.textContent || ""
+      )
+        .replace(/\s+/g, " ")
+        .trim();
+      const text = (
+        segment.querySelector(
+          ".segment-text, yt-formatted-string.segment-text, span.ytAttributedStringHost, [role='text']"
+        )?.textContent || ""
+      )
+        .replace(/\s+/g, " ")
+        .trim();
       if (!text) return "";
       return timestamp ? `${timestamp} | ${text}` : text;
     })
     .filter(Boolean);
 }
 
-function findMenuButton() {
-  const candidates = Array.from(document.querySelectorAll(MENU_BUTTON_SELECTOR));
-  return candidates.find((el) => hasKeyword(getElementText(el), ["more actions", "more"])) || null;
+function findTranscriptChip() {
+  return findByKeyword(TRANSCRIPT_CHIP_SELECTOR, TRANSCRIPT_KEYWORDS, CLOSE_KEYWORDS);
 }
 
-function findTranscriptMenuItem() {
-  const candidates = Array.from(document.querySelectorAll(MENU_ITEM_SELECTOR));
-  return candidates.find((el) => hasKeyword(getElementText(el), ["show transcript", "transcript"])) || null;
-}
+async function ensureTranscriptIsOpen() {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    if (getSubtitleLinesFromPanel().length) return true;
 
-async function ensureTranscriptPanelOpen() {
-  if (getTranscriptLinesFromDom().length > 0) return;
+    const chip = findTranscriptChip();
+    if (chip) {
+      console.log(`${DEBUG_PREFIX} Click transcript chip (attempt ${attempt}).`);
+      chip.click();
+      await sleep(700);
+      if (getSubtitleLinesFromPanel().length) return true;
+    }
 
-  // Sometimes transcript item is already visible.
-  if (click(findTranscriptMenuItem())) {
-    await wait(250);
-    return;
+    const moreButton = findByKeyword(MORE_MENU_SELECTOR, MORE_KEYWORDS);
+    if (moreButton) {
+      console.log(`${DEBUG_PREFIX} Open more menu (attempt ${attempt}).`);
+      moreButton.click();
+      await sleep(300);
+    }
+
+    const menuItem = findByKeyword(MENU_ITEM_SELECTOR, TRANSCRIPT_KEYWORDS, CLOSE_KEYWORDS);
+    if (menuItem) {
+      console.log(`${DEBUG_PREFIX} Click transcript menu item (attempt ${attempt}).`);
+      menuItem.click();
+    } else {
+      console.log(`${DEBUG_PREFIX} Transcript button/menu item not found (attempt ${attempt}).`);
+    }
+
+    await sleep(700);
   }
-
-  // Normal path: click menu -> click transcript item.
-  click(findMenuButton());
-  await wait(250);
-  click(findTranscriptMenuItem());
-  await wait(350);
+  return false;
 }
 
-async function extractTranscriptText(maxAttempts, delayMs) {
-  for (let i = 0; i < maxAttempts; i += 1) {
-    const lines = getTranscriptLinesFromDom();
-    if (lines.length > 0) return lines.join("\n");
+function readVideoMeta() {
+  const url = new URL(window.location.href);
+  const videoId = url.searchParams.get("v");
+  if (!videoId) throw new Error("No videoId found in URL");
 
-    await ensureTranscriptPanelOpen();
-    await wait(delayMs);
-  }
-  return "";
+  const lessonName =
+    document.querySelector("h1.ytd-watch-metadata yt-formatted-string")?.textContent?.trim() ||
+    document.title.replace(" - YouTube", "").trim() ||
+    "-";
+
+  const course =
+    document.querySelector("ytd-channel-name a")?.textContent?.trim() ||
+    document.querySelector("#owner #channel-name a")?.textContent?.trim() ||
+    "-";
+
+  return { videoId, lessonName, course };
 }
 
 async function extractSubtitlePayload() {
-  const videoId = getVideoId();
-  if (!videoId) throw new Error("No videoId found in URL");
+  await ensureTranscriptIsOpen();
+  const lines = getSubtitleLinesFromPanel();
 
-  const subtitleText = await extractTranscriptText(12, 450);
-  if (!subtitleText) throw new Error("Transcript not found. Open transcript manually and try again.");
+  if (!lines.length) {
+    throw new Error("Transcript not found. Open a video that has transcript.");
+  }
 
+  console.log(`${DEBUG_PREFIX} First 3 subtitle lines:`);
+  lines.slice(0, 3).forEach((line, index) => {
+    console.log(`${DEBUG_PREFIX} ${index + 1}. ${line}`);
+  });
+
+  const { videoId, lessonName, course } = readVideoMeta();
   return {
     videoId,
-    videoUrl: window.location.href,
-    course: getCourseName(),
-    lessonName: getLessonName(),
-    languageCode: "dom",
-    subtitleText,
-    fetchedAt: new Date().toISOString(),
+    lessonName,
+    course,
+    subtitleText: lines.join("\n"),
   };
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type !== "EXTRACT_SUBTITLES") return;
+function setupMessageListener() {
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type !== "EXTRACT_SUBTITLES") return;
 
-  (async () => {
-    try {
-      const payload = await extractSubtitlePayload();
-      sendResponse({ ok: true, payload });
-    } catch (error) {
-      sendResponse({ ok: false, error: String(error) });
-    }
-  })();
+    (async () => {
+      try {
+        const payload = await extractSubtitlePayload();
+        sendResponse({ ok: true, payload });
+      } catch (error) {
+        sendResponse({ ok: false, error: String(error) });
+      }
+    })();
 
-  return true;
-});
+    return true;
+  });
+}
+
+if (!window.__YT_SUBTITLE_EXTRACTOR_INSTALLED__) {
+  window.__YT_SUBTITLE_EXTRACTOR_INSTALLED__ = true;
+  setupMessageListener();
+  console.log(`${DEBUG_PREFIX} content script loaded`);
+}
+
+// timestamp: .ytwTranscriptSegmentViewModelTimestamp
+// text: span.ytAttributedStringHost
